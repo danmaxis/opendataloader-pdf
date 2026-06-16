@@ -1,0 +1,125 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\QMETA-INF/services/java.lang.System$LoggerFinder\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/java.net.spi.URLStreamHandlerProvider\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/java.time.zone.ZoneRulesProvider\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/javax.imageio.spi.ImageInputStreamSpi\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/javax.imageio.spi.ImageOutputStreamSpi\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/javax.imageio.spi.ImageReaderSpi\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/javax.imageio.spi.ImageTranscoderSpi\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/javax.imageio.spi.ImageWriterSpi\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/javax.xml.parsers.DocumentBuilderFactory\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/org.apache.commons.logging.LogFactory\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/org.apache.pdfbox.jbig2.util.cache.CacheBridge\\E"
+      },
+      {
+        "pattern": "\\QMETA-INF/services/org.apache.pdfbox.jbig2.util.log.LoggerBridge\\E"
+      },
+      {
+        "pattern": "\\Qcommons-logging.properties\\E"
+      },
+      {
+        "pattern": "\\Qfont/AdobeGlyphList.txt\\E"
+      },
+      {
+        "pattern": "\\Qfont/cmap/Identity-H\\E"
+      },
+      {
+        "pattern": "\\Qfont/stdmetrics/Helvetica.afm\\E"
+      },
+      {
+        "pattern": "\\Qfont/stdmetrics/Times-Roman.afm\\E"
+      },
+      {
+        "pattern": "\\Qorg/apache/fontbox/cmap/Identity-H\\E"
+      },
+      {
+        "pattern": "\\Qorg/apache/pdfbox/resources/afm/Helvetica.afm\\E"
+      },
+      {
+        "pattern": "\\Qorg/apache/pdfbox/resources/afm/Times-Roman.afm\\E"
+      },
+      {
+        "pattern": "\\Qorg/apache/pdfbox/resources/glyphlist/glyphlist.txt\\E"
+      },
+      {
+        "pattern": "\\Qorg/apache/pdfbox/resources/glyphlist/zapfdingbats.txt\\E"
+      },
+      {
+        "pattern": "\\Qorg/apache/pdfbox/resources/ttf/LiberationSans-Regular.ttf\\E"
+      },
+      {
+        "pattern": "java.base:\\Qjdk/internal/icu/impl/data/icudt72b/nfkc.nrm\\E"
+      },
+      {
+        "pattern": "java.base:\\Qjdk/internal/icu/impl/data/icudt72b/uprops.icu\\E"
+      },
+      {
+        "pattern": "java.base:\\Qsun/net/idn/uidna.spp\\E"
+      },
+      {
+        "pattern": "java.desktop:\\Qsun/java2d/cmm/profiles/sRGB.pf\\E"
+      },
+      {
+        "pattern": "font/.*"
+      },
+      {
+        "pattern": "org/verapdf/.*"
+      },
+      {
+        "pattern": "pdfa/.*"
+      },
+      {
+        "pattern": "pd/font/.*"
+      },
+      {
+        "pattern": "operator/type3font/.*"
+      },
+      {
+        "pattern": "metadata/fixer/.*"
+      },
+      {
+        "pattern": "schematron/.*"
+      },
+      {
+        "pattern": "verapdf/.*"
+      }
+    ]
+  },
+  "bundles": [
+    {
+      "name": "com.sun.org.apache.xerces.internal.impl.msg.SAXMessages",
+      "locales": [
+        "und"
+      ]
+    },
+    {
+      "name": "sun.awt.resources.awt",
+      "classNames": [
+        "sun.awt.resources.awt"
+      ]
+    }
+  ]
+}
