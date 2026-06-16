@@ -3,6 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { StringDecoder } from 'string_decoder';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+
+// `require` is not defined in an emitted ESM module; recreate it from the module
+// URL so `require.resolve(...)` works when locating the per-platform binary.
+const require = createRequire(import.meta.url);
 
 // Re-export types and utilities from auto-generated file
 export type { ConvertOptions } from './convert-options.generated.js';
