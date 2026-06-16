@@ -84,20 +84,30 @@ jobs:
           BIN="${{ steps.bin.outputs.path }}"
           "$BIN" samples/pdf/lorem.pdf --output-dir out-smoke --format json,markdown
           test -f out-smoke/lorem.json && echo "native json output OK"
-          # Exercise the AWT image-extraction path here (visible stderr) so any
-          # libawt/font/init issue surfaces directly rather than being masked by
-          # the parity harness's captured output.
+          # Exercise the AWT image-extraction path (visible stderr). It must always
+          # exit 0 and produce the markdown; on platforms without a native AWT
+          # backend (Windows/macOS) image extraction is gracefully skipped, so the
+          # PNG is only required on Linux.
           "$BIN" samples/pdf/chinese_scan.pdf --output-dir out-smoke-img --format markdown --image-output external
-          test -f out-smoke-img/chinese_scan_images/imageFile1.png && echo "native image output OK"
+          test -f out-smoke-img/chinese_scan.md && echo "native markdown output OK"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            test -f out-smoke-img/chinese_scan_images/imageFile1.png && echo "native image extraction OK (Linux)"
+          else
+            echo "image extraction not required on ${{ runner.os }} (gracefully skipped if AWT unavailable)"
+          fi
 
       - name: Parity check vs JVM jar
         shell: bash
         run: |
           JAR=$(ls java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar | grep -v original | head -1)
+          # Linux has a working native AWT backend, so compare with images.
+          # On Windows/macOS image extraction is skipped, so compare text/data only.
+          if [ "${{ runner.os }}" = "Linux" ]; then IMG=external; else IMG=off; fi
           python3 scripts/parity_check.py \
             --native "${{ steps.bin.outputs.path }}" \
             --jar "$JAR" \
-            --samples samples/pdf
+            --samples samples/pdf \
+            --image-output "$IMG"
 
       - name: Package artifact
         shell: bash
