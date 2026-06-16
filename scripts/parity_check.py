@@ -53,7 +53,7 @@ def run_cli(cmd_prefix, pdf: Path, out_dir: Path, fmt: str):
     cmd = [*cmd_prefix, str(pdf), "--output-dir", str(out_dir), "--format", fmt,
            "--image-output", "external"]
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    return proc.returncode
+    return proc.returncode, (proc.stderr or "")
 
 
 def compare_dir(jvm_dir: Path, nat_dir: Path, problems: list):
@@ -110,10 +110,14 @@ def main() -> int:
             tag = f"{pdf.stem}/{fmt}"
             jvm_dir = work / "jvm" / pdf.stem / fmt
             nat_dir = work / "native" / pdf.stem / fmt
-            rc_jvm = run_cli(jvm_cmd, pdf, jvm_dir, fmt)
-            rc_nat = run_cli(native_cmd, pdf, nat_dir, fmt)
+            rc_jvm, _ = run_cli(jvm_cmd, pdf, jvm_dir, fmt)
+            rc_nat, err_nat = run_cli(native_cmd, pdf, nat_dir, fmt)
             if rc_jvm != rc_nat:
                 problems.append(f"Exit code differs ({tag}): jvm={rc_jvm} native={rc_nat}")
+                # Surface the native error so CI logs explain the crash.
+                tail = "\n      ".join(err_nat.strip().splitlines()[-12:])
+                if tail:
+                    problems.append(f"  native stderr ({tag}):\n      {tail}")
             compare_dir(jvm_dir, nat_dir, problems)
             checked += 1
             print(f"  checked {tag}: {'OK' if not problems else 'see report'}")
