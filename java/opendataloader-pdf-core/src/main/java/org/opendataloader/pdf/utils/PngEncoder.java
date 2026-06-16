@@ -33,9 +33,10 @@ import java.util.zip.Deflater;
  * bytes produced here are identical on the JVM and in the native image —
  * which lets the golden-file parity tests compare image output exactly.
  *
- * <p>Pixels are read via {@link BufferedImage#getRGB(int, int)} so it works for
- * any image type. Output is 8-bit truecolor: RGB when the source is fully
- * opaque, RGBA otherwise.
+ * <p>Pixels are read a scanline at a time via
+ * {@link BufferedImage#getRGB(int, int, int, int, int[], int, int)} so it works
+ * for any image type without per-pixel call overhead. Output is 8-bit truecolor:
+ * RGB when the source is fully opaque, RGBA otherwise.
  */
 public final class PngEncoder {
 
@@ -83,11 +84,15 @@ public final class PngEncoder {
         // IDAT: each scanline prefixed with filter byte 0 (None), then deflated.
         int channels = hasAlpha ? 4 : 3;
         byte[] raw = new byte[height * (1 + width * channels)];
+        int[] row = new int[width];
         int pos = 0;
         for (int y = 0; y < height; y++) {
             raw[pos++] = 0; // filter: None
+            // Batch-read the whole scanline in one call instead of per-pixel
+            // getRGB(x, y) — far less overhead on large page images.
+            image.getRGB(0, y, width, 1, row, 0, width);
             for (int x = 0; x < width; x++) {
-                int argb = image.getRGB(x, y);
+                int argb = row[x];
                 raw[pos++] = (byte) ((argb >> 16) & 0xFF); // R
                 raw[pos++] = (byte) ((argb >> 8) & 0xFF);  // G
                 raw[pos++] = (byte) (argb & 0xFF);         // B
@@ -102,9 +107,11 @@ public final class PngEncoder {
     }
 
     private static boolean imageUsesAlpha(BufferedImage image, int width, int height) {
+        int[] row = new int[width];
         for (int y = 0; y < height; y++) {
+            image.getRGB(0, y, width, 1, row, 0, width);
             for (int x = 0; x < width; x++) {
-                if ((image.getRGB(x, y) >>> 24) != 0xFF) {
+                if ((row[x] >>> 24) != 0xFF) {
                     return true;
                 }
             }
