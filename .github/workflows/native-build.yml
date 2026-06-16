@@ -54,14 +54,19 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu fonts-noto-cjk
 
+      # native-image on Windows needs the MSVC toolchain (vcvarsall.bat); export
+      # the x64 dev environment into subsequent steps.
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build shaded jar
         run: mvn -B -ntp -DskipTests -f java/pom.xml package
 
       - name: Build native image
         run: mvn -B -ntp -DskipTests -f java/pom.xml -Pnative -pl opendataloader-pdf-cli -am package
-        env:
-          # The native build is memory-hungry; give the builder room.
-          JAVA_TOOL_OPTIONS: ''
 
       - name: Locate binary
         id: bin
@@ -79,6 +84,11 @@ jobs:
           BIN="${{ steps.bin.outputs.path }}"
           "$BIN" samples/pdf/lorem.pdf --output-dir out-smoke --format json,markdown
           test -f out-smoke/lorem.json && echo "native json output OK"
+          # Exercise the AWT image-extraction path here (visible stderr) so any
+          # libawt/font/init issue surfaces directly rather than being masked by
+          # the parity harness's captured output.
+          "$BIN" samples/pdf/chinese_scan.pdf --output-dir out-smoke-img --format markdown --image-output external
+          test -f out-smoke-img/chinese_scan_images/imageFile1.png && echo "native image output OK"
 
       - name: Parity check vs JVM jar
         shell: bash
@@ -92,10 +102,19 @@ jobs:
       - name: Package artifact
         shell: bash
         run: |
-          mkdir -p dist/opendataloader-pdf-${{ matrix.target }}
-          cp "${{ steps.bin.outputs.path }}" dist/opendataloader-pdf-${{ matrix.target }}/
-          cp LICENSE NOTICE dist/opendataloader-pdf-${{ matrix.target }}/
-          cp -r THIRD_PARTY dist/opendataloader-pdf-${{ matrix.target }}/
+          OUT=dist/opendataloader-pdf-${{ matrix.target }}
+          mkdir -p "$OUT"
+          cp "${{ steps.bin.outputs.path }}" "$OUT/"
+          # Ship the headless-AWT sidecar libraries that native-image emits next
+          # to the binary (libawt_*, libfontmanager, libjavajpeg, liblcms, ...);
+          # the binary loads them via an $ORIGIN/@loader_path rpath, so they must
+          # travel together. Without these the image-extraction path fails with
+          # "UnsatisfiedLinkError: No awt in java.library.path".
+          find java/opendataloader-pdf-cli/target -maxdepth 1 \
+               \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+               -exec cp {} "$OUT/" \;
+          cp LICENSE NOTICE "$OUT/"
+          cp -r THIRD_PARTY "$OUT/"
           tar -czf opendataloader-pdf-${{ matrix.target }}.tar.gz -C dist opendataloader-pdf-${{ matrix.target }}
 
       - name: Upload build artifact
