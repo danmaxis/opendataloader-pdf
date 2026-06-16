@@ -25,8 +25,9 @@ a font at runtime (see the slim-pod image).
 
 ## Building locally
 
-Requires a **GraalVM JDK 21** and ~6–8 GB free RAM for the build (the analysis
-closed world over veraPDF + PDFBox is memory-hungry; the final image-write phase
+Requires a **GraalVM JDK 21** and ~6–8 GB free RAM for the build (native-image's
+whole-program (closed-world) static analysis over veraPDF + PDFBox is
+memory-hungry; the final image-write phase
 peaks around 4 GB).
 
 ```bash
@@ -88,20 +89,23 @@ The image build asserts there is no `java` on `PATH`.
 
 Set `OPENDATALOADER_USE_JVM=1` to force the legacy `java -jar` path.
 
-## Platform status & known issues (deferred)
+## Platform status
 
 | Target | Status |
 |--------|--------|
 | linux-x64 | ✅ Full parity with the JVM jar (all formats + image extraction), validated incl. a JVM-free `python:3.12-slim` wheel. |
 | linux-arm64 | ✅ Builds successfully. |
-| win-x64 | ⚠️ Builds (after the MSVC dev-env fix) and runs non-image formats (JSON/text/markdown/HTML/tagged). **Image extraction fails**: `NoSuchMethodError: java.awt.Toolkit.getDefaultToolkit()` — native-image AWT/Toolkit support on Windows is limited. |
-| darwin-arm64 / darwin-x64 | ⚠️ Build succeeds; the AWT image-extraction path fails (same class of native-image AWT limitation). |
+| win-x64 | ✅ Text/data fully supported (JSON/text/markdown/HTML/tagged). Image **extraction** (page rasterization) is **gracefully skipped** — see below. |
+| darwin-arm64 / darwin-x64 | ✅ Same as Windows: text/data fully supported; image extraction gracefully skipped. |
 
-**Deferred fix for Windows/macOS image extraction.** The image path goes through
-veraPDF's `ContrastRatioConsumer`, which rasterizes pages via `java.awt.Toolkit`
-/ `BufferedImage`. native-image's AWT backend is solid on Linux but limited on
-Windows/macOS. Options to pursue later: (a) gate image extraction at runtime on
-those platforms with a clear message; (b) provide a non-AWT page-raster backend;
-(c) track GraalVM AWT support for those targets. Until then, Windows/macOS
-binaries are usable for text/markdown/JSON/HTML/tagged output but not
-`--image-output` rendering. Linux is full-featured.
+**Image extraction on Windows/macOS.** Page rasterization goes through veraPDF's
+`ContrastRatioConsumer` → `java.awt.Toolkit` / `BufferedImage`. native-image's AWT
+backend is solid on Linux but limited on Windows/macOS (it surfaces as
+`NoSuchMethodError: java.awt.Toolkit.getDefaultToolkit()` the first time a page is
+rendered). Rather than crash, the binary **catches this and skips image
+extraction + hidden-text detection for the document, logging one warning**, and
+completes all text/structure output normally (exit 0). So on Windows/macOS:
+`--image-output off` is effectively forced; everything else
+(text/markdown/JSON/HTML/tagged, tables, lists, reading order) works. **Linux is
+full-featured**, including extracted images. Future options to restore images on
+Win/macOS: a non-AWT page-raster backend, or improved GraalVM AWT support.
