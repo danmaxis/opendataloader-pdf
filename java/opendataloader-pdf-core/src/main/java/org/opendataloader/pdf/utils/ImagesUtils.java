@@ -136,7 +136,19 @@ public class ImagesUtils {
     private void createImageFile(BoundingBox imageBox, String fileName, String imageFormat,
                                  String pdfFilePath, String password) {
         ContrastRatioConsumer consumer = StaticLayoutContainers.getContrastRatioConsumer(pdfFilePath, password, false, null);
-        BufferedImage targetImage = consumer != null ? consumer.getPageSubImage(imageBox) : null;
+        if (consumer == null) {
+            return;
+        }
+        BufferedImage targetImage;
+        try {
+            targetImage = consumer.getPageSubImage(imageBox);
+        } catch (Throwable t) {
+            // Page rasterization can fail with an Error (not just Exception) on
+            // platforms whose native-image build lacks a working AWT backend.
+            // Skip image extraction for the rest of the document rather than abort.
+            StaticLayoutContainers.markRenderingUnavailable(t);
+            return;
+        }
         if (targetImage == null) {
             return;
         }
