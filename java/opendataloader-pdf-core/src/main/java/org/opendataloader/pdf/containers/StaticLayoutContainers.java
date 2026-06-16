@@ -90,11 +90,16 @@ public class StaticLayoutContainers {
             if (contrastRatioConsumer.get() == null && !Boolean.TRUE.equals(isContrastRatioConsumerFailedToCreate.get())) {
                 contrastRatioConsumer.set(new ContrastRatioConsumer(sourcePdfPath, password, enableAntialias, imagePixelSize));
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             // Issue #458: surface init failures at SEVERE with full throwable.
             // Previously a WARNING-only log silently disabled image extraction and
             // hidden-text filtering for the rest of the document, making OOM /
             // PDFBox failures very hard to diagnose downstream.
+            //
+            // Throwable (not just Exception) so a missing-AWT Error on platforms
+            // where native-image has no working AWT backend (e.g. Windows/macOS:
+            // NoSuchMethodError java.awt.Toolkit.getDefaultToolkit) degrades
+            // gracefully instead of crashing the whole conversion.
             LOGGER.log(Level.SEVERE,
                 "Failed to initialize ContrastRatioConsumer for PDF '" + sourcePdfPath
                     + "'. Image extraction and hidden-text filtering will be skipped for this document.",
@@ -102,6 +107,26 @@ public class StaticLayoutContainers {
             isContrastRatioConsumerFailedToCreate.set(true);
         }
         return contrastRatioConsumer.get();
+    }
+
+    /**
+     * Marks page rendering (AWT) as unavailable for the current document after a
+     * render call has thrown — so subsequent calls to
+     * {@link #getContrastRatioConsumer} short-circuit to {@code null} and callers
+     * skip image extraction / hidden-text detection. Used to degrade gracefully on
+     * platforms whose native-image build has no working AWT backend, rather than
+     * letting a render-time {@link Error} (e.g. a missing AWT method) abort the
+     * whole conversion. Logged once per document at WARNING.
+     */
+    public static void markRenderingUnavailable(Throwable cause) {
+        if (!Boolean.TRUE.equals(isContrastRatioConsumerFailedToCreate.get())) {
+            LOGGER.log(Level.WARNING,
+                "Page rendering is unavailable on this platform; image extraction and "
+                    + "hidden-text detection will be skipped. Text and structure extraction continue normally.",
+                cause);
+        }
+        isContrastRatioConsumerFailedToCreate.set(true);
+        contrastRatioConsumer.remove();
     }
 
     /**
