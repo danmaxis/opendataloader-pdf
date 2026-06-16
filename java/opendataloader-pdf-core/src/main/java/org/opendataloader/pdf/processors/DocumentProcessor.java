@@ -517,6 +517,30 @@ public class DocumentProcessor {
      * {@link org.opendataloader.pdf.api.OutputWriter#writeOutputs}, which is
      * the stable public API.
      */
+    /** An output-format generator that may throw any exception. */
+    @FunctionalInterface
+    private interface FormatTask {
+        void run() throws Exception;
+    }
+
+    /**
+     * Runs a single output-format generator, degrading gracefully if it fails.
+     * On platforms whose native-image build lacks a working AWT backend (the
+     * Windows/macOS binaries throw {@code NoSuchMethodError} for
+     * {@code java.awt.Toolkit} when an output rasterizes or color-manages a
+     * page), the affected format is skipped with a warning rather than aborting
+     * the whole conversion — the AWT-free formats (JSON/Markdown/text) still
+     * complete.
+     */
+    private static void generateFormat(String name, FormatTask task) {
+        try {
+            task.run();
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING,
+                name + " output was skipped (rendering unavailable on this platform): " + t, t);
+        }
+    }
+
     public static void generateOutputs(String inputPdfName, List<List<IObject>> contents, Config config,
                                            Map<Long, ElementMetadata> elementMetadata) throws IOException {
         // Stdout mode: write primary format to stdout, skip file I/O
@@ -551,13 +575,18 @@ public class DocumentProcessor {
             ImagesUtils imagesUtils = new ImagesUtils();
             imagesUtils.write(contents, inputPdfName, config.getPassword());
         }
+        // Tagged PDF, annotated PDF and HTML can rasterize / color-manage via AWT,
+        // which the native-image builds for Windows/macOS lack — so run them through
+        // generateFormat() to skip the format with a warning instead of aborting.
         if (config.isGenerateTaggedPDF()) {
-            AutoTaggingProcessor.createTaggedPDF(inputPDF, config.getOutputFolder(),
-                StaticResources.getDocument(), contents);
+            generateFormat("Tagged PDF", () -> AutoTaggingProcessor.createTaggedPDF(inputPDF, config.getOutputFolder(),
+                StaticResources.getDocument(), contents));
         }
         if (config.isGeneratePDF()) {
-            PDFWriter pdfWriter = new PDFWriter();
-            pdfWriter.updatePDF(inputPDF, config.getPassword(), config.getOutputFolder(), contents);
+            generateFormat("Annotated PDF", () -> {
+                PDFWriter pdfWriter = new PDFWriter();
+                pdfWriter.updatePDF(inputPDF, config.getPassword(), config.getOutputFolder(), contents);
+            });
         }
         if (config.isGenerateJSON()) {
             JsonWriter.writeToJson(inputPDF, config.getOutputFolder(), contents, elementMetadata,
@@ -570,9 +599,11 @@ public class DocumentProcessor {
             }
         }
         if (config.isGenerateHtml()) {
-            try (HtmlGenerator htmlGenerator = HtmlGeneratorFactory.getHtmlGenerator(inputPDF, config)) {
-                htmlGenerator.writeToHtml(contents);
-            }
+            generateFormat("HTML", () -> {
+                try (HtmlGenerator htmlGenerator = HtmlGeneratorFactory.getHtmlGenerator(inputPDF, config)) {
+                    htmlGenerator.writeToHtml(contents);
+                }
+            });
         }
         if (config.isGenerateText()) {
             try (TextGenerator textGenerator = new TextGenerator(inputPDF, config)) {
