@@ -286,7 +286,7 @@ function generatePythonConvert() {
   lines.push('"""');
   lines.push('from typing import List, Optional, Union');
   lines.push('');
-  lines.push('from .runner import run_jar');
+  lines.push('from .runner import run');
   lines.push('');
   lines.push('');
 
@@ -359,7 +359,7 @@ function generatePythonConvert() {
   }
 
   lines.push('');
-  lines.push('    run_jar(args, quiet)');
+  lines.push('    run(args, quiet)');
   lines.push('');
 
   const outputPath = join(ROOT_DIR, 'python/opendataloader-pdf/src/opendataloader_pdf/convert_generated.py');

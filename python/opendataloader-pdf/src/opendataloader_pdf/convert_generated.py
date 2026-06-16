@@ -6,7 +6,7 @@ Auto-generated convert function for opendataloader-pdf.
 """
 from typing import List, Optional, Union
 
-from .runner import run_jar
+from .runner import run
 
 
 def convert(
@@ -159,4 +159,4 @@ def convert(
     if threads:
         args.extend(["--threads", threads])
 
-    run_jar(args, quiet)
+    run(args, quiet)
