@@ -60,9 +60,9 @@ public class DiskPageImageCache implements PageImageCache {
         if (image == null) {
             throw new IOException("Page image fetcher returned null for page " + pageIndex);
         }
-        if (!ImageIO.write(image, "png", file.toFile())) {
-            throw new IOException("No ImageIO writer accepted PNG output for page " + pageIndex);
-        }
+        // Encode PNG with the dependency-free, deterministic encoder (native-image
+        // friendly). ImageIO is still used above to decode cached PNGs.
+        Files.write(file, org.opendataloader.pdf.utils.PngEncoder.encode(image));
         return image;
     }
 

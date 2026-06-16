@@ -35,7 +35,9 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
+import java.util.Locale;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -155,15 +157,17 @@ public class ImagesUtils {
     void writeBufferedImageToFile(BufferedImage targetImage, String fileName, String imageFormat) {
         try {
             try {
+                // PNG is encoded with our dependency-free PngEncoder so the native
+                // (GraalVM) build doesn't need the javax.imageio PNG writer, and so
+                // the bytes are byte-for-byte identical between the JVM and native
+                // builds. JPEG (lossy) still goes through ImageIO.
+                byte[] encoded = encodeImage(targetImage, imageFormat);
                 if (StaticLayoutContainers.isEmbedImages()) {
-                    // Embedded mode: encode in memory and cache for downstream base64 inlining;
+                    // Embedded mode: cache encoded bytes for downstream base64 inlining;
                     // no disk write — output is a single self-contained file.
-                    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-                    ImageIO.write(targetImage, imageFormat, buffer);
-                    StaticLayoutContainers.cacheEmbeddedImageBytes(fileName, buffer.toByteArray());
+                    StaticLayoutContainers.cacheEmbeddedImageBytes(fileName, encoded);
                 } else {
-                    File outputFile = new File(fileName);
-                    ImageIO.write(targetImage, imageFormat, outputFile);
+                    Files.write(new File(fileName).toPath(), encoded);
                 }
             } catch (IOException e) {
                 // Same catch covers both branches — encoding-to-buffer (embedded)
@@ -175,6 +179,22 @@ public class ImagesUtils {
             // even if encoding/writing fails.
             targetImage.flush();
         }
+    }
+
+    /**
+     * Encodes a {@link BufferedImage} to the requested format. PNG uses the
+     * dependency-free {@link PngEncoder} (native-image friendly, deterministic
+     * bytes); any other format (e.g. JPEG) falls back to {@link ImageIO}.
+     */
+    private static byte[] encodeImage(BufferedImage image, String imageFormat) throws IOException {
+        if (imageFormat != null && imageFormat.toLowerCase(Locale.ROOT).equals("png")) {
+            return PngEncoder.encode(image);
+        }
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        if (!ImageIO.write(image, imageFormat, buffer)) {
+            throw new IOException("No image writer available for format: " + imageFormat);
+        }
+        return buffer.toByteArray();
     }
 
     public static boolean isImageFileExists(String fileName) {
