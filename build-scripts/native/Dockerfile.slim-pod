@@ -1,0 +1,38 @@
+# Proof that opendataloader-pdf runs in a Java-free Python pod.
+#
+# Builds a python:3.12-slim image (Debian/glibc, NO JDK, NO `java` on PATH) with
+# only the native binary + the few shared libs headless AWT needs at runtime.
+# Use this to validate the JVM-free wheel / binary end to end.
+#
+# The build context must contain a `native/` directory with the GraalVM output:
+# the `opendataloader-pdf` binary AND its sidecar *.so libraries (libawt_*,
+# libfontmanager, libjavajpeg, liblcms, ...). The binary finds them via an
+# $ORIGIN rpath, so they must sit next to it.
+#
+#   mkdir -p ctx/native && cp target/opendataloader-pdf target/*.so ctx/native/
+#   cp build-scripts/native/Dockerfile.slim-pod ctx/
+#   docker build -f ctx/Dockerfile.slim-pod -t odl-slim-pod ctx
+#
+# Run:
+#   docker run --rm -v "$PWD/samples:/samples" odl-slim-pod \
+#       /samples/pdf/lorem.pdf --output-dir /tmp/out --format json,markdown
+FROM python:3.12-slim
+
+# Headless AWT (veraPDF renders pages to BufferedImage) needs fontconfig,
+# freetype and at least one font at runtime. fonts-noto-cjk covers the
+# Chinese-scan sample. This is the ONLY system dependency — no JRE/JDK.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        fontconfig libfreetype6 fonts-dejavu fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG NATIVE_DIR=native
+COPY ${NATIVE_DIR}/ /opt/opendataloader/
+RUN chmod +x /opt/opendataloader/opendataloader-pdf \
+    && ln -s /opt/opendataloader/opendataloader-pdf /usr/local/bin/opendataloader-pdf
+
+# Prove there is no Java anywhere in the image.
+RUN if command -v java >/dev/null 2>&1; then echo "JAVA FOUND — not JVM-free!" && exit 1; fi \
+    && echo "Confirmed: no 'java' on PATH"
+
+ENTRYPOINT ["/opt/opendataloader/opendataloader-pdf"]
