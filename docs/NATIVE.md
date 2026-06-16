@@ -1,0 +1,89 @@
+# JVM-free native build
+
+This fork compiles the existing Java core into a **standalone native executable**
+with [GraalVM native-image](https://www.graalvm.org/reference-manual/native-image/),
+so it runs with **no Java runtime installed**. The primary motivation is running
+the library inside a slim Python pod/container that has no Java layer.
+
+Nothing about the parser was rewritten — the benchmark-leading veraPDF + WCAG
+algorithms are compiled as-is, so output is identical to the JVM build (enforced
+by the parity harness).
+
+## What changed vs. upstream
+
+| Area | Change |
+|------|--------|
+| `java/opendataloader-pdf-cli/pom.xml` | Added a `native` Maven profile using `native-maven-plugin`. |
+| `…/META-INF/native-image/**` | Committed GraalVM reachability metadata + `native-image.properties` build args. |
+| `utils/PngEncoder.java` | Dependency-free, deterministic PNG encoder (replaces `ImageIO` PNG *writes*) so image bytes are identical on JVM and native and the native build avoids the `ImageIO` writer `ServiceLoader`. JPEG and PNG *decoding* still use `ImageIO`. |
+| Python/Node wrappers | Spawn the native binary by default; fall back to `java -jar` when no binary is bundled or `OPENDATALOADER_USE_JVM=1`. |
+| `.github/workflows/native-build.yml` | Per-OS/arch native build matrix + parity gate + release assets. |
+
+AWT is **not** removed — veraPDF's `ContrastRatioConsumer` renders pages to
+`BufferedImage`. The binary ships headless AWT; on Linux it needs `fontconfig` +
+a font at runtime (see the slim-pod image).
+
+## Building locally
+
+Requires a **GraalVM JDK 21** and ~6–8 GB free RAM for the build (the analysis
+closed world over veraPDF + PDFBox is memory-hungry; the final image-write phase
+peaks around 4 GB).
+
+```bash
+# 1. build the shaded jar (embeds the reachability metadata)
+mvn -f java/pom.xml -DskipTests package
+
+# 2. (re)generate reachability metadata if you changed code paths
+build-scripts/native/trace-metadata.sh
+
+# 3. build the native image
+mvn -f java/pom.xml -Pnative -pl opendataloader-pdf-cli -am -DskipTests package
+# -> java/opendataloader-pdf-cli/target/opendataloader-pdf
+```
+
+On a RAM-constrained machine, build in a memory-capped container instead (the
+official image bundles native-image):
+
+```bash
+JAR=java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar
+docker run --rm -v "$PWD/$JAR":/app.jar:ro -v "$PWD/out":/out \
+  ghcr.io/graalvm/native-image-community:21 \
+  -jar /app.jar -o /out/opendataloader-pdf -Ob --parallelism=2
+```
+
+CI (`native-build.yml`) builds all platforms on GitHub runners (16 GB) and is the
+recommended path for release binaries.
+
+## Verifying parity
+
+```bash
+python3 scripts/parity_check.py \
+  --native java/opendataloader-pdf-cli/target/opendataloader-pdf \
+  --jar    java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar \
+  --samples samples/pdf
+```
+
+## Slim Python pod proof (no Java in the image)
+
+```bash
+docker build -f build-scripts/native/Dockerfile.slim-pod \
+  --build-arg NATIVE_BINARY=java/opendataloader-pdf-cli/target/opendataloader-pdf \
+  -t odl-slim-pod .
+docker run --rm -v "$PWD/samples:/samples" odl-slim-pod \
+  /samples/pdf/lorem.pdf --output-dir /tmp/out --format json,markdown
+```
+
+The image build asserts there is no `java` on `PATH`.
+
+## Packaging
+
+* **Python**: platform wheels embed the matching binary under
+  `opendataloader_pdf/bin/`. Set `ODL_NATIVE_BINARY=/path/to/binary` before
+  `hatch build` to produce a JVM-free wheel; without it the build falls back to
+  bundling the jar.
+* **Node**: per-platform optional-dependency packages
+  (`@opendataloader/pdf-<os>-<arch>`) each ship one binary; the main package
+  resolves the right one at runtime. Set `ODL_NATIVE_BINARY` for `setup.cjs` to
+  bundle a binary under `lib/bin/`.
+
+Set `OPENDATALOADER_USE_JVM=1` to force the legacy `java -jar` path.
