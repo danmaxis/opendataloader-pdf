@@ -1,0 +1,122 @@
+name: Native Build
+
+# Builds standalone JVM-free executables with GraalVM native-image for every
+# supported OS/arch, runs the parity harness against the JVM jar, and uploads
+# the binaries (also attached to the GitHub Release on tag pushes).
+#
+# native-image cannot cross-compile, so each target builds on its own runner.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'java/**'
+      - '.github/workflows/native-build.yml'
+      - 'build-scripts/native/**'
+      - 'scripts/parity_check.py'
+
+jobs:
+  build:
+    name: native (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: windows-latest
+            target: win-x64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up GraalVM (JDK 21)
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: 'graalvm'
+          java-version: '21'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      # Headless AWT (veraPDF renders pages to BufferedImage) needs fontconfig
+      # and at least one font at runtime; include CJK for the Chinese sample.
+      - name: Install fonts (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu fonts-noto-cjk
+
+      - name: Build shaded jar
+        run: mvn -B -ntp -DskipTests -f java/pom.xml package
+
+      - name: Build native image
+        run: mvn -B -ntp -DskipTests -f java/pom.xml -Pnative -pl opendataloader-pdf-cli -am package
+        env:
+          # The native build is memory-hungry; give the builder room.
+          JAVA_TOOL_OPTIONS: ''
+
+      - name: Locate binary
+        id: bin
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo "path=java/opendataloader-pdf-cli/target/opendataloader-pdf.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=java/opendataloader-pdf-cli/target/opendataloader-pdf" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test (no JVM on PATH semantics)
+        shell: bash
+        run: |
+          BIN="${{ steps.bin.outputs.path }}"
+          "$BIN" samples/pdf/lorem.pdf --output-dir out-smoke --format json,markdown
+          test -f out-smoke/lorem.json && echo "native json output OK"
+
+      - name: Parity check vs JVM jar
+        shell: bash
+        run: |
+          JAR=$(ls java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar | grep -v original | head -1)
+          python3 scripts/parity_check.py \
+            --native "${{ steps.bin.outputs.path }}" \
+            --jar "$JAR" \
+            --samples samples/pdf
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist/opendataloader-pdf-${{ matrix.target }}
+          cp "${{ steps.bin.outputs.path }}" dist/opendataloader-pdf-${{ matrix.target }}/
+          cp LICENSE NOTICE dist/opendataloader-pdf-${{ matrix.target }}/
+          cp -r THIRD_PARTY dist/opendataloader-pdf-${{ matrix.target }}/
+          tar -czf opendataloader-pdf-${{ matrix.target }}.tar.gz -C dist opendataloader-pdf-${{ matrix.target }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opendataloader-pdf-${{ matrix.target }}
+          path: opendataloader-pdf-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  release-assets:
+    name: Attach binaries to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
