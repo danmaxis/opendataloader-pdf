@@ -100,13 +100,20 @@ jobs:
         shell: bash
         run: |
           JAR=$(ls java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar | grep -v original | head -1)
-          # Linux has a working native AWT backend, so compare with images.
-          # On Windows/macOS image extraction is skipped, so compare text/data only.
-          if [ "${{ runner.os }}" = "Linux" ]; then IMG=external; else IMG=off; fi
+          # Linux has a working native AWT backend, so compare every format with
+          # images. On Windows/macOS the AWT-dependent outputs (HTML, annotated
+          # PDF, image extraction) are gracefully skipped, so compare the AWT-free
+          # formats (json/markdown/text) with image output off.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            FORMATS=json,markdown,html,text,pdf; IMG=external
+          else
+            FORMATS=json,markdown,text; IMG=off
+          fi
           python3 scripts/parity_check.py \
             --native "${{ steps.bin.outputs.path }}" \
             --jar "$JAR" \
             --samples samples/pdf \
+            --formats "$FORMATS" \
             --image-output "$IMG"
 
       - name: Package artifact
