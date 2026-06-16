@@ -87,3 +87,21 @@ The image build asserts there is no `java` on `PATH`.
   bundle a binary under `lib/bin/`.
 
 Set `OPENDATALOADER_USE_JVM=1` to force the legacy `java -jar` path.
+
+## Platform status & known issues (deferred)
+
+| Target | Status |
+|--------|--------|
+| linux-x64 | ✅ Full parity with the JVM jar (all formats + image extraction), validated incl. a JVM-free `python:3.12-slim` wheel. |
+| linux-arm64 | ✅ Builds successfully. |
+| win-x64 | ⚠️ Builds (after the MSVC dev-env fix) and runs non-image formats (JSON/text/markdown/HTML/tagged). **Image extraction fails**: `NoSuchMethodError: java.awt.Toolkit.getDefaultToolkit()` — native-image AWT/Toolkit support on Windows is limited. |
+| darwin-arm64 / darwin-x64 | ⚠️ Build succeeds; the AWT image-extraction path fails (same class of native-image AWT limitation). |
+
+**Deferred fix for Windows/macOS image extraction.** The image path goes through
+veraPDF's `ContrastRatioConsumer`, which rasterizes pages via `java.awt.Toolkit`
+/ `BufferedImage`. native-image's AWT backend is solid on Linux but limited on
+Windows/macOS. Options to pursue later: (a) gate image extraction at runtime on
+those platforms with a clear message; (b) provide a non-AWT page-raster backend;
+(c) track GraalVM AWT support for those targets. Until then, Windows/macOS
+binaries are usable for text/markdown/JSON/HTML/tagged output but not
+`--image-output` rendering. Linux is full-featured.
