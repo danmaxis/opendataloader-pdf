@@ -93,19 +93,19 @@ Set `OPENDATALOADER_USE_JVM=1` to force the legacy `java -jar` path.
 
 | Target | Status |
 |--------|--------|
-| linux-x64 | ✅ Full parity with the JVM jar (all formats + image extraction), validated incl. a JVM-free `python:3.12-slim` wheel. |
+| linux-x64 | ✅ Full parity with the JVM jar — **all** formats (JSON/Markdown/HTML/text/annotated-PDF/tagged-PDF) + image extraction. Validated incl. a JVM-free `python:3.12-slim` wheel. |
 | linux-arm64 | ✅ Builds successfully. |
-| win-x64 | ✅ Text/data fully supported (JSON/text/markdown/HTML/tagged). Image **extraction** (page rasterization) is **gracefully skipped** — see below. |
-| darwin-arm64 / darwin-x64 | ✅ Same as Windows: text/data fully supported; image extraction gracefully skipped. |
+| win-x64 | ✅ **JSON / Markdown / text** fully supported. AWT-dependent outputs (HTML, annotated PDF, tagged PDF, image extraction) are **gracefully skipped** — see below. |
+| darwin-arm64 / darwin-x64 | ✅ Same as Windows. |
 
-**Image extraction on Windows/macOS.** Page rasterization goes through veraPDF's
-`ContrastRatioConsumer` → `java.awt.Toolkit` / `BufferedImage`. native-image's AWT
-backend is solid on Linux but limited on Windows/macOS (it surfaces as
-`NoSuchMethodError: java.awt.Toolkit.getDefaultToolkit()` the first time a page is
-rendered). Rather than crash, the binary **catches this and skips image
-extraction + hidden-text detection for the document, logging one warning**, and
-completes all text/structure output normally (exit 0). So on Windows/macOS:
-`--image-output off` is effectively forced; everything else
-(text/markdown/JSON/HTML/tagged, tables, lists, reading order) works. **Linux is
-full-featured**, including extracted images. Future options to restore images on
-Win/macOS: a non-AWT page-raster backend, or improved GraalVM AWT support.
+**AWT on Windows/macOS.** Several outputs touch AWT: image extraction and
+hidden-text rasterize pages (veraPDF `ContrastRatioConsumer` → `BufferedImage`),
+HTML color-manages text colors (`java.awt.Color`), and the annotated/tagged PDF
+writers go through PDFBox. native-image's AWT backend is solid on Linux but
+incomplete on Windows/macOS — the first AWT call throws
+`NoSuchMethodError: java.awt.Toolkit.getDefaultToolkit()`. Rather than crash, the
+binary **catches this per output format, logs one warning, and skips that format**
+(image extraction + hidden-text too), while the AWT-free formats
+(**JSON / Markdown / text**, with tables, lists and reading order) complete
+normally (exit 0). **Linux is full-featured.** Restoring HTML/PDF/images on
+Windows/macOS needs a non-AWT raster/color path or improved GraalVM AWT support.
