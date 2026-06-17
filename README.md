@@ -64,6 +64,20 @@ opendataloader_pdf.convert(
 
 *Annotated PDF output — each element (heading, paragraph, table, image) detected with bounding boxes and semantic type.*
 
+### JVM-free install (no Java) — linux
+
+This fork also ships **standalone native wheels** that bundle a GraalVM
+native-image build, so they run in a slim Python pod with **no Java and no
+`git`**. Add to `requirements.txt` (pip picks the right arch via the markers):
+
+```text
+opendataloader-pdf @ https://github.com/danmaxis/opendataloader-pdf/releases/download/latest/opendataloader_pdf-0.1.0-py3-none-manylinux_2_34_x86_64.whl ; sys_platform == "linux" and platform_machine == "x86_64"
+opendataloader-pdf @ https://github.com/danmaxis/opendataloader-pdf/releases/download/latest/opendataloader_pdf-0.1.0-py3-none-manylinux_2_34_aarch64.whl ; sys_platform == "linux" and platform_machine == "aarch64"
+```
+
+`convert()` works the same; on linux JSON/Markdown/HTML/text + image extraction
+are all supported. See [`docs/NATIVE.md`](docs/NATIVE.md) for details.
+
 ## What Problems Does This Solve?
 
 | Problem | Solution | Status |

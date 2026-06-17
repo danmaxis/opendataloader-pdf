@@ -76,6 +76,32 @@ docker run --rm -v "$PWD/samples:/samples" odl-slim-pod \
 
 The image build asserts there is no `java` on `PATH`.
 
+## Install via requirements.txt (no Java, no git)
+
+The CI `linux-wheels` job builds JVM-free wheels for linux **x86_64** and **arm64**
+and attaches them to a moving [`latest`](https://github.com/danmaxis/opendataloader-pdf/releases/tag/latest)
+GitHub Release. The wheel bundles the native binary + its headless-AWT `.so`
+sidecars, so a slim Python pod needs **no Java and no `git`** — just `pip`.
+
+Add these lines to `requirements.txt` (pip auto-selects the right arch via the
+environment markers; the `manylinux_2_XX` number is whatever glibc floor the
+build runner reports — read it off the published asset names):
+
+```text
+# linux only — JVM-free native wheels from the fork's `latest` release
+opendataloader-pdf @ https://github.com/danmaxis/opendataloader-pdf/releases/download/latest/opendataloader_pdf-0.1.0-py3-none-manylinux_2_34_x86_64.whl ; sys_platform == "linux" and platform_machine == "x86_64"
+opendataloader-pdf @ https://github.com/danmaxis/opendataloader-pdf/releases/download/latest/opendataloader_pdf-0.1.0-py3-none-manylinux_2_34_aarch64.whl ; sys_platform == "linux" and platform_machine == "aarch64"
+```
+
+```bash
+pip install --no-cache-dir -r requirements.txt
+```
+
+`latest` is a **moving tag at a fixed version (`0.1.0`)**, so pip may serve a
+cached copy of the wheel; use `--no-cache-dir` (or bump the version) when a
+refreshed `latest` must be picked up. Pin to an immutable `v*` release tag
+instead if you need byte-for-byte reproducibility.
+
 ## Packaging
 
 * **Python**: platform wheels embed the matching binary under
