@@ -23,6 +23,19 @@ AWT is **not** removed — veraPDF's `ContrastRatioConsumer` renders pages to
 `BufferedImage`. The binary ships headless AWT; on Linux it needs `fontconfig` +
 a font at runtime (see the slim-pod image).
 
+### Non-ASCII / accented paths
+
+native-image freezes `sun.jnu.encoding` — the charset used to decode
+command-line arguments and filesystem paths — at **build time** from the build
+machine's locale, and never re-reads the runtime locale (unlike stock HotSpot).
+A `C`/POSIX build locale (the CI/Docker default) would bake it to ASCII, so a
+path like `Dimensões.pdf` fails with `File or folder ... not found` regardless of
+the runtime `LANG`/`LC_ALL`. The build pins `-Dsun.jnu.encoding=UTF-8` (plus
+`-Dfile.encoding=UTF-8` and `-H:+AddAllCharsets`) in `native-image.properties` so
+UTF-8 argv/paths always work; the CI build locale is also set to `C.UTF-8` as a
+backstop. The `native-build.yml` smoke test converts an accented filename on
+every OS/arch to guard against regressions.
+
 ## Building locally
 
 Requires a **GraalVM JDK 21** and ~6–8 GB free RAM for the build (native-image's

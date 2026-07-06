@@ -26,6 +26,13 @@ jobs:
   build:
     name: native (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # A UTF-8 build locale is belt-and-suspenders for the encoding pin in
+    # native-image.properties: even if the -Dsun.jnu.encoding build arg were ever
+    # dropped, native-image would still bake UTF-8 (not the C/POSIX ASCII default)
+    # so non-ASCII argv/paths keep working. See docs and the accented smoke test.
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +106,14 @@ jobs:
           else
             echo "image extraction not required on ${{ runner.os }} (gracefully skipped if AWT unavailable)"
           fi
+          # Regression guard for the sun.jnu.encoding pin: a non-ASCII argv path
+          # must be decoded as UTF-8, not ASCII. Before the pin this printed
+          # "WARNING: File or folder ... not found", produced no json, and failed
+          # here. Exercises the exact Brazilian-accent case that motivated the fix.
+          mkdir -p out-accent
+          cp samples/pdf/lorem.pdf "out-accent/Dimensões-açéntõ.pdf"
+          "$BIN" "out-accent/Dimensões-açéntõ.pdf" --output-dir out-accent --format json
+          test -f "out-accent/Dimensões-açéntõ.json" && echo "native accented-path OK"
 
       - name: Parity check vs JVM jar
         shell: bash
@@ -196,7 +211,10 @@ jobs:
       - name: Build native binary in old-glibc GraalVM container
         run: |
           JAR=$(ls java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar | grep -v original | head -1)
+          # UTF-8 build locale (belt-and-suspenders for the -Dsun.jnu.encoding pin
+          # in native-image.properties); the container defaults to a C/POSIX locale.
           docker run --rm \
+            -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
             -v "$PWD/java/opendataloader-pdf-cli/target":/target \
             ghcr.io/graalvm/native-image-community:21 \
             -jar "/target/$(basename "$JAR")" -o /target/opendataloader-pdf --no-fallback
@@ -226,7 +244,10 @@ jobs:
 
       - name: Verify wheel in python:3.12-slim (no Java)
         run: |
+          # LANG=C.UTF-8 keeps Python's own argv/path handling UTF-8 so this test
+          # isolates the native binary's baked encoding, not a Python locale quirk.
           docker run --rm \
+            -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
             -v "$PWD/python/opendataloader-pdf/dist":/d \
             -v "$PWD/samples":/s \
             python:3.12-slim sh -c '
@@ -235,6 +256,10 @@ jobs:
               if command -v java >/dev/null 2>&1; then echo "java unexpectedly present"; exit 1; fi
               python -c "import opendataloader_pdf as o; o.convert(\"/s/pdf/lorem.pdf\", output_dir=\"/tmp/o\", format=\"json,markdown\")"
               test -f /tmp/o/lorem.json && echo "slim-pod wheel OK (${{ matrix.target }})"
+              # Accented-path regression guard (sun.jnu.encoding pin) via the packaged wheel.
+              cp /s/pdf/lorem.pdf "/tmp/Dimensões-açéntõ.pdf"
+              python -c "import opendataloader_pdf as o; o.convert(\"/tmp/Dimensões-açéntõ.pdf\", output_dir=\"/tmp/oa\", format=\"json\")"
+              test -f "/tmp/oa/Dimensões-açéntõ.json" && echo "slim-pod accented-path OK (${{ matrix.target }})"
             '
 
       - name: Upload wheel artifact
