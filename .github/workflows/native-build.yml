@@ -110,10 +110,20 @@ jobs:
           # must be decoded as UTF-8, not ASCII. Before the pin this printed
           # "WARNING: File or folder ... not found", produced no json, and failed
           # here. Exercises the exact Brazilian-accent case that motivated the fix.
-          mkdir -p out-accent
-          cp samples/pdf/lorem.pdf "out-accent/Dimensões-açéntõ.pdf"
-          "$BIN" "out-accent/Dimensões-açéntõ.pdf" --output-dir out-accent --format json
-          test -f "out-accent/Dimensões-açéntõ.json" && echo "native accented-path OK"
+          #
+          # Linux/macOS only: Windows hands the native image its argv through the
+          # ANSI code page (not UTF-16), so the UTF-8 bytes are already corrupted
+          # before the JVM decodes them — the build-time sun.jnu.encoding pin can't
+          # recover them. Non-ASCII argv on Windows is a known native-image
+          # limitation, tracked in docs/NATIVE.md, not a regression of this fix.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "accented-path assertion skipped on Windows (argv is ANSI-code-page, not UTF-8)"
+          else
+            mkdir -p out-accent
+            cp samples/pdf/lorem.pdf "out-accent/Dimensões-açéntõ.pdf"
+            "$BIN" "out-accent/Dimensões-açéntõ.pdf" --output-dir out-accent --format json
+            test -f "out-accent/Dimensões-açéntõ.json" && echo "native accented-path OK (${{ runner.os }})"
+          fi
 
       - name: Parity check vs JVM jar
         shell: bash

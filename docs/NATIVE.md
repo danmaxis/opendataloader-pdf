@@ -32,9 +32,11 @@ A `C`/POSIX build locale (the CI/Docker default) would bake it to ASCII, so a
 path like `Dimensões.pdf` fails with `File or folder ... not found` regardless of
 the runtime `LANG`/`LC_ALL`. The build pins `-Dsun.jnu.encoding=UTF-8` (plus
 `-Dfile.encoding=UTF-8` and `-H:+AddAllCharsets`) in `native-image.properties` so
-UTF-8 argv/paths always work; the CI build locale is also set to `C.UTF-8` as a
-backstop. The `native-build.yml` smoke test converts an accented filename on
-every OS/arch to guard against regressions.
+UTF-8 argv/paths always work **on Linux and macOS**; the CI build locale is also
+set to `C.UTF-8` as a backstop. The `native-build.yml` smoke test converts an
+accented filename to guard against regressions. **Windows is the exception** — its
+`argv` arrives through the ANSI code page, so non-ASCII input paths are not
+supported there (details under *Platform status → Non-ASCII paths on Windows*).
 
 ## Building locally
 
@@ -134,8 +136,8 @@ Set `OPENDATALOADER_USE_JVM=1` to force the legacy `java -jar` path.
 |--------|--------|
 | linux-x64 | ✅ Full parity with the JVM jar — **all** formats (JSON/Markdown/HTML/text/annotated-PDF/tagged-PDF) + image extraction. Validated incl. a JVM-free `python:3.12-slim` wheel. |
 | linux-arm64 | ✅ Builds successfully. |
-| win-x64 | ✅ **JSON / Markdown / text** fully supported. AWT-dependent outputs (HTML, annotated PDF, tagged PDF, image extraction) are **gracefully skipped** — see below. |
-| darwin-arm64 / darwin-x64 | ✅ Same as Windows. |
+| win-x64 | ✅ **JSON / Markdown / text** fully supported. AWT-dependent outputs (HTML, annotated PDF, tagged PDF, image extraction) are **gracefully skipped** — see below. **Non-ASCII input paths are not supported** — see below. |
+| darwin-arm64 / darwin-x64 | ✅ Same as Windows, **but non-ASCII paths work** (only Windows is affected). |
 
 **AWT on Windows/macOS.** Several outputs touch AWT: image extraction and
 hidden-text rasterize pages (veraPDF `ContrastRatioConsumer` → `BufferedImage`),
@@ -148,3 +150,15 @@ binary **catches this per output format, logs one warning, and skips that format
 (**JSON / Markdown / text**, with tables, lists and reading order) complete
 normally (exit 0). **Linux is full-featured.** Restoring HTML/PDF/images on
 Windows/macOS needs a non-AWT raster/color path or improved GraalVM AWT support.
+
+**Non-ASCII paths on Windows.** The `-Dsun.jnu.encoding=UTF-8` pin (see above)
+fixes accented/non-ASCII input paths on **Linux and macOS**, but **not on
+Windows**: a Windows native image receives its command-line `argv` through the
+system **ANSI code page** rather than UTF-16, so the UTF-8 path bytes are already
+replaced with `?`/`�` before the JVM decodes them — the build-time pin cannot
+recover what the OS layer dropped. A path like `Dimensões.pdf` therefore still
+fails with `File or folder ... not found` on the Windows binary. This is a known
+GraalVM native-image limitation (it would need a `wmain`/UTF-16 argv entry point);
+the CI accented-path smoke test is scoped to Linux/macOS for this reason. The
+JVM-free **linux wheels are unaffected** — they are the primary distribution and
+handle non-ASCII paths correctly.
