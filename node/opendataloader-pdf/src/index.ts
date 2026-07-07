@@ -3,6 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { StringDecoder } from 'string_decoder';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
+
+// `require` is not defined in an emitted ESM module; recreate it from the module
+// URL so `require.resolve(...)` works when locating the per-platform binary.
+const require = createRequire(import.meta.url);
 
 // Re-export types and utilities from auto-generated file
 export type { ConvertOptions } from './convert-options.generated.js';
@@ -14,39 +19,84 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const JAR_NAME = 'opendataloader-pdf-cli.jar';
+const BIN_NAME =
+  process.platform === 'win32' ? 'opendataloader-pdf.exe' : 'opendataloader-pdf';
 
-interface JarExecutionOptions {
+interface CliExecutionOptions {
   /**
-   * When true, forwards Java's stdout and stderr chunks to the parent
+   * When true, forwards the CLI's stdout and stderr chunks to the parent
    * process in real time as well as accumulating them. Used by the bundled
    * CLI so long-running conversions show progress as it happens.
    */
   streamOutput?: boolean;
 }
 
-function executeJar(args: string[], executionOptions: JarExecutionOptions = {}): Promise<string> {
+/** Force the legacy JVM path via OPENDATALOADER_USE_JVM. */
+function useJvm(): boolean {
+  const value = (process.env.OPENDATALOADER_USE_JVM ?? '').trim().toLowerCase();
+  return value !== '' && value !== '0' && value !== 'false' && value !== 'no';
+}
+
+/**
+ * Locate the bundled native (GraalVM) executable. Looks first at the
+ * per-platform optional-dependency package (`@opendataloader/pdf-<os>-<arch>`),
+ * then at a binary bundled directly under `lib/bin/`. Returns null when none is
+ * present (e.g. a source checkout), so the caller falls back to the JVM jar.
+ */
+function resolveNativeBinary(): string | null {
+  if (useJvm()) return null;
+  const pkg = `@opendataloader/pdf-${process.platform}-${process.arch}`;
+  // 1) optional-dependency package
+  try {
+    const entry = require.resolve(`${pkg}/bin/${BIN_NAME}`);
+    if (fs.existsSync(entry)) return entry;
+  } catch {
+    // optional dependency not installed for this platform — try the local copy
+  }
+  // 2) binary bundled inside this package
+  const local = path.join(__dirname, '..', 'lib', 'bin', BIN_NAME);
+  if (fs.existsSync(local)) return local;
+  return null;
+}
+
+/**
+ * Resolve how to invoke the CLI: the native binary when available, otherwise
+ * `java -jar` against the bundled jar.
+ */
+function resolveCli(): { command: string; prefixArgs: string[] } {
+  const nativeBin = resolveNativeBinary();
+  if (nativeBin) {
+    return { command: nativeBin, prefixArgs: [] };
+  }
+  const jarPath = path.join(__dirname, '..', 'lib', JAR_NAME);
+  if (!fs.existsSync(jarPath)) {
+    throw new Error(
+      `No native binary and no JAR found (looked for lib/bin/${BIN_NAME} and lib/${JAR_NAME}). ` +
+        `Run the build script first.`,
+    );
+  }
+  // Force headless AWT so macOS doesn't surface a Dock icon (and steal focus)
+  // every time the JVM touches ImageIO/PDFBox rendering. Safe on all OSes —
+  // the CLI never opens a UI window, only manipulates BufferedImages.
+  return {
+    command: 'java',
+    prefixArgs: ['-Djava.awt.headless=true', '-Dapple.awt.UIElement=true', '-jar', jarPath],
+  };
+}
+
+function executeCli(args: string[], executionOptions: CliExecutionOptions = {}): Promise<string> {
   const { streamOutput = false } = executionOptions;
 
   return new Promise((resolve, reject) => {
-    const jarPath = path.join(__dirname, '..', 'lib', JAR_NAME);
-
-    if (!fs.existsSync(jarPath)) {
-      return reject(
-        new Error(`JAR file not found at ${jarPath}. Please run the build script first.`),
-      );
+    let command: string;
+    let prefixArgs: string[];
+    try {
+      ({ command, prefixArgs } = resolveCli());
+    } catch (err) {
+      return reject(err as Error);
     }
 
-    const command = 'java';
-    // Force headless AWT so macOS doesn't surface a Dock icon (and steal focus)
-    // every time the JVM touches ImageIO/PDFBox rendering. Safe on all OSes —
-    // the CLI never opens a UI window, only manipulates BufferedImages.
-    const commandArgs = [
-      '-Djava.awt.headless=true',
-      '-Dapple.awt.UIElement=true',
-      '-jar',
-      jarPath,
-      ...args,
-    ];
+    const commandArgs = [...prefixArgs, ...args];
 
     const javaProcess = spawn(command, commandArgs);
 
@@ -119,11 +169,11 @@ function executeJar(args: string[], executionOptions: JarExecutionOptions = {}):
 
     javaProcess.on('error', (err: Error) => {
       if (err.message.includes('ENOENT')) {
-        reject(
-          new Error(
-            "'java' command not found. Please ensure Java is installed and in your system's PATH.",
-          ),
-        );
+        const hint =
+          command === 'java'
+            ? "'java' command not found. Please ensure Java is installed and in your system's PATH, or install the native build."
+            : `Native binary not found or not executable at '${command}'.`;
+        reject(new Error(hint));
       } else {
         reject(err);
       }
@@ -160,7 +210,7 @@ export function convert(
   // Library API: never streams to the parent process. Returns the full stdout
   // string so callers can do `const out = await convert(...)` without surprise
   // side-effects on process.stdout / process.stderr.
-  return executeJar(argsOrError, { streamOutput: false });
+  return executeCli(argsOrError, { streamOutput: false });
 }
 
 /**
@@ -182,7 +232,7 @@ export async function _runForCli(
   if (argsOrError instanceof Error) {
     throw argsOrError;
   }
-  await executeJar(argsOrError, { streamOutput: true });
+  await executeCli(argsOrError, { streamOutput: true });
 }
 
 /**

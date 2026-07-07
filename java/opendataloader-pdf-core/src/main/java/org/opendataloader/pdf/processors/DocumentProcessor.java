@@ -28,6 +28,7 @@ import org.opendataloader.pdf.pdf.PDFWriter;
 import org.opendataloader.pdf.api.Config;
 import org.opendataloader.pdf.text.TextGenerator;
 import org.opendataloader.pdf.utils.ContentSanitizer;
+import org.opendataloader.pdf.utils.FileUtils;
 import org.opendataloader.pdf.utils.ImagesUtils;
 import org.opendataloader.pdf.utils.TextNodeUtils;
 import org.verapdf.as.ASAtom;
@@ -248,6 +249,7 @@ public class DocumentProcessor {
 
         // Capture ALL ThreadLocal state from main thread for propagation to workers
         final var document = StaticContainers.getDocument();
+        final var pdDocument = StaticResources.getDocument();
         final var tableBordersCollection = StaticContainers.getTableBordersCollection();
         final var accumulatedNodeMapper = StaticContainers.getAccumulatedNodeMapper();
         final var objectKeyMapper = StaticContainers.getObjectKeyMapper();
@@ -264,6 +266,7 @@ public class DocumentProcessor {
 
         // Runnable that propagates ThreadLocal state to the current (worker) thread
         final Runnable propagateState = () -> {
+            StaticResources.setDocument(pdDocument);
             // veraPDF StaticContainers
             StaticContainers.setDocument(document);
             StaticContainers.setTableBordersCollection(tableBordersCollection);
@@ -340,9 +343,7 @@ public class DocumentProcessor {
                     propagateState.run();
                     List<IObject> pageContents = contents.get(pageNumber);
                     if (structured) {
-                        if (config.isDetectStrikethrough()) {
-                            StrikethroughProcessor.processStrikethroughs(pageContents, pageNumber);
-                        }
+                        TextDecorationProcessor.processStrikethroughAndUnderlinedText(pageContents, pageNumber, config.isDetectStrikethrough());
                         pageContents = TableBorderProcessor.processTableBorders(pageContents, pageNumber);
                         pageContents = pageContents.stream().filter(x -> !(x instanceof LineChunk)).collect(Collectors.toList());
                         pageContents = SpecialTableProcessor.detectSpecialTables(pageContents);
@@ -355,6 +356,7 @@ public class DocumentProcessor {
             if (structured) {
                 // Cross-page operations (must be sequential)
                 HeaderFooterProcessor.processHeadersAndFooters(contents, false);
+                new TableOfContentsProcessor().processTableOfContents(contents);
                 ListProcessor.processLists(contents, false);
             }
 
@@ -517,6 +519,30 @@ public class DocumentProcessor {
      * {@link org.opendataloader.pdf.api.OutputWriter#writeOutputs}, which is
      * the stable public API.
      */
+    /** An output-format generator that may throw any exception. */
+    @FunctionalInterface
+    private interface FormatTask {
+        void run() throws Exception;
+    }
+
+    /**
+     * Runs a single output-format generator, degrading gracefully if it fails.
+     * On platforms whose native-image build lacks a working AWT backend (the
+     * Windows/macOS binaries throw {@code NoSuchMethodError} for
+     * {@code java.awt.Toolkit} when an output rasterizes or color-manages a
+     * page), the affected format is skipped with a warning rather than aborting
+     * the whole conversion — the AWT-free formats (JSON/Markdown/text) still
+     * complete.
+     */
+    private static void generateFormat(String name, FormatTask task) {
+        try {
+            task.run();
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING,
+                name + " output was skipped (rendering unavailable on this platform): " + t, t);
+        }
+    }
+
     public static void generateOutputs(String inputPdfName, List<List<IObject>> contents, Config config,
                                            Map<Long, ElementMetadata> elementMetadata) throws IOException {
         // Stdout mode: write primary format to stdout, skip file I/O
@@ -544,20 +570,24 @@ public class DocumentProcessor {
                 imagesDirectory = config.getImageDir();
             } else {
                 String fileName = Paths.get(inputPdfName).getFileName().toString();
-                String baseName = fileName.substring(0, fileName.length() - 4);
-                imagesDirectory = config.getOutputFolder() + File.separator + baseName + MarkdownSyntax.IMAGES_DIRECTORY_SUFFIX;
+                imagesDirectory = config.getOutputFolder() + File.separator + FileUtils.getBaseName(fileName) + MarkdownSyntax.IMAGES_DIRECTORY_SUFFIX;
             }
             StaticLayoutContainers.setImagesDirectory(imagesDirectory);
             ImagesUtils imagesUtils = new ImagesUtils();
             imagesUtils.write(contents, inputPdfName, config.getPassword());
         }
+        // Tagged PDF, annotated PDF and HTML can rasterize / color-manage via AWT,
+        // which the native-image builds for Windows/macOS lack — so run them through
+        // generateFormat() to skip the format with a warning instead of aborting.
         if (config.isGenerateTaggedPDF()) {
-            AutoTaggingProcessor.createTaggedPDF(inputPDF, config.getOutputFolder(),
-                StaticResources.getDocument(), contents);
+            generateFormat("Tagged PDF", () -> AutoTaggingProcessor.createTaggedPDF(inputPDF, config.getOutputFolder(),
+                StaticResources.getDocument(), contents));
         }
         if (config.isGeneratePDF()) {
-            PDFWriter pdfWriter = new PDFWriter();
-            pdfWriter.updatePDF(inputPDF, config.getPassword(), config.getOutputFolder(), contents);
+            generateFormat("Annotated PDF", () -> {
+                PDFWriter pdfWriter = new PDFWriter();
+                pdfWriter.updatePDF(inputPDF, config.getPassword(), config.getOutputFolder(), contents);
+            });
         }
         if (config.isGenerateJSON()) {
             JsonWriter.writeToJson(inputPDF, config.getOutputFolder(), contents, elementMetadata,
@@ -570,9 +600,11 @@ public class DocumentProcessor {
             }
         }
         if (config.isGenerateHtml()) {
-            try (HtmlGenerator htmlGenerator = HtmlGeneratorFactory.getHtmlGenerator(inputPDF, config)) {
-                htmlGenerator.writeToHtml(contents);
-            }
+            generateFormat("HTML", () -> {
+                try (HtmlGenerator htmlGenerator = HtmlGeneratorFactory.getHtmlGenerator(inputPDF, config)) {
+                    htmlGenerator.writeToHtml(contents);
+                }
+            });
         }
         if (config.isGenerateText()) {
             try (TextGenerator textGenerator = new TextGenerator(inputPDF, config)) {
@@ -612,7 +644,8 @@ public class DocumentProcessor {
         StaticResources.setDocument(pdDocument);
         GFSAPDFDocument document = new GFSAPDFDocument(pdDocument);
 //        org.verapdf.gf.model.impl.containers.StaticContainers.setFlavour(Collections.singletonList(PDFAFlavour.WCAG_2_2));
-        StaticResources.setFlavour(Collections.singletonList(PDFFlavour.WCAG_2_2_HUMAN));
+        StaticResources.setFlavour(Collections.singletonList(Objects.equals(pdDocument.getVersion(), 2.0F) ?
+            PDFFlavour.WCAG_2_2_PDF_2_0_HUMAN : PDFFlavour.WCAG_2_2_HUMAN));
         StaticStorages.setIsFilterInvisibleLayers(config.getFilterConfig().isFilterHiddenOCG());
         StaticContainers.setDocument(document);
         if (config.isUseStructTree()) {

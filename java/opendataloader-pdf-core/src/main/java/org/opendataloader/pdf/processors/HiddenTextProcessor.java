@@ -46,10 +46,22 @@ public class HiddenTextProcessor {
         if (contrastRatioConsumer == null) {
             return contents;
         }
+        boolean renderingFailed = false;
         for (IObject content : contents) {
-            if (content instanceof TextChunk) {
+            if (!renderingFailed && content instanceof TextChunk) {
                 TextChunk textChunk = (TextChunk) content;
-                contrastRatioConsumer.calculateContrastRatio(textChunk);
+                try {
+                    contrastRatioConsumer.calculateContrastRatio(textChunk);
+                } catch (Throwable t) {
+                    // Contrast measurement rasterizes the page; on platforms whose
+                    // native-image build lacks a working AWT backend this throws an
+                    // Error. Stop hidden-text detection and pass remaining content
+                    // through unchanged rather than aborting the conversion.
+                    StaticLayoutContainers.markRenderingUnavailable(t);
+                    renderingFailed = true;
+                    result.add(content);
+                    continue;
+                }
                 if (textChunk.getContrastRatio() < MIN_CONTRAST_RATIO) {
                     if (!isFilterHiddenText) {
                         textChunk.setHiddenText(true);

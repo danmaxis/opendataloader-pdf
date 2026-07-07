@@ -846,9 +846,9 @@ public class HancomAIClient implements HybridClient {
     }
 
     private byte[] imageToPng(BufferedImage image) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        ImageIO.write(image, "png", baos);
-        return baos.toByteArray();
+        // Use the dependency-free, deterministic encoder for PNG output so the
+        // native build produces identical bytes to the JVM build.
+        return org.opendataloader.pdf.utils.PngEncoder.encode(image);
     }
 
     private void addTimings(ObjectNode timingsNode, String moduleName, JsonNode result) {

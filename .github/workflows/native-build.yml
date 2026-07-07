@@ -1,0 +1,323 @@
+name: Native Build
+
+# Builds standalone JVM-free executables with GraalVM native-image for every
+# supported OS/arch, runs the parity harness against the JVM jar, and uploads
+# the binaries (also attached to the GitHub Release on tag pushes).
+#
+# native-image cannot cross-compile, so each target builds on its own runner.
+
+on:
+  push:
+    tags:
+      - 'v*'
+      # Dedicated tag for cutting native binaries + JVM-free wheels without
+      # also triggering release.yml (which only matches 'v*' and would fail on
+      # the fork's missing PyPI/npm/Maven secrets).
+      - 'wheels-v*'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'java/**'
+      - '.github/workflows/native-build.yml'
+      - 'build-scripts/native/**'
+      - 'scripts/parity_check.py'
+
+jobs:
+  build:
+    name: native (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    # A UTF-8 build locale is belt-and-suspenders for the encoding pin in
+    # native-image.properties: even if the -Dsun.jnu.encoding build arg were ever
+    # dropped, native-image would still bake UTF-8 (not the C/POSIX ASCII default)
+    # so non-ASCII argv/paths keep working. See docs and the accented smoke test.
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: windows-latest
+            target: win-x64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up GraalVM (JDK 21)
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: 'graalvm'
+          java-version: '21'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
+          cache: 'maven'
+
+      # Headless AWT (veraPDF renders pages to BufferedImage) needs fontconfig
+      # and at least one font at runtime; include CJK for the Chinese sample.
+      - name: Install fonts (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fontconfig fonts-dejavu fonts-noto-cjk
+
+      # native-image on Windows needs the MSVC toolchain (vcvarsall.bat); export
+      # the x64 dev environment into subsequent steps.
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build shaded jar
+        run: mvn -B -ntp -DskipTests -f java/pom.xml package
+
+      - name: Build native image
+        run: mvn -B -ntp -DskipTests -f java/pom.xml -Pnative -pl opendataloader-pdf-cli -am package
+
+      - name: Locate binary
+        id: bin
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            echo "path=java/opendataloader-pdf-cli/target/opendataloader-pdf.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=java/opendataloader-pdf-cli/target/opendataloader-pdf" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test (no JVM on PATH semantics)
+        shell: bash
+        run: |
+          BIN="${{ steps.bin.outputs.path }}"
+          "$BIN" samples/pdf/lorem.pdf --output-dir out-smoke --format json,markdown
+          test -f out-smoke/lorem.json && echo "native json output OK"
+          # Exercise the AWT image-extraction path (visible stderr). It must always
+          # exit 0 and produce the markdown; on platforms without a native AWT
+          # backend (Windows/macOS) image extraction is gracefully skipped, so the
+          # PNG is only required on Linux.
+          "$BIN" samples/pdf/chinese_scan.pdf --output-dir out-smoke-img --format markdown --image-output external
+          test -f out-smoke-img/chinese_scan.md && echo "native markdown output OK"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            test -f out-smoke-img/chinese_scan_images/imageFile1.png && echo "native image extraction OK (Linux)"
+          else
+            echo "image extraction not required on ${{ runner.os }} (gracefully skipped if AWT unavailable)"
+          fi
+          # Regression guard for the sun.jnu.encoding pin: a non-ASCII argv path
+          # must be decoded as UTF-8, not ASCII. Before the pin this printed
+          # "WARNING: File or folder ... not found", produced no json, and failed
+          # here. Exercises the exact Brazilian-accent case that motivated the fix.
+          #
+          # Linux/macOS only: Windows hands the native image its argv through the
+          # ANSI code page (not UTF-16), so the UTF-8 bytes are already corrupted
+          # before the JVM decodes them — the build-time sun.jnu.encoding pin can't
+          # recover them. Non-ASCII argv on Windows is a known native-image
+          # limitation, tracked in docs/NATIVE.md, not a regression of this fix.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "accented-path assertion skipped on Windows (argv is ANSI-code-page, not UTF-8)"
+          else
+            mkdir -p out-accent
+            cp samples/pdf/lorem.pdf "out-accent/Dimensões-açéntõ.pdf"
+            "$BIN" "out-accent/Dimensões-açéntõ.pdf" --output-dir out-accent --format json
+            test -f "out-accent/Dimensões-açéntõ.json" && echo "native accented-path OK (${{ runner.os }})"
+          fi
+
+      - name: Parity check vs JVM jar
+        shell: bash
+        run: |
+          JAR=$(ls java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar | grep -v original | head -1)
+          # Linux has a working native AWT backend, so compare every format with
+          # images. On Windows/macOS the AWT-dependent outputs (HTML, annotated
+          # PDF, image extraction) are gracefully skipped, so compare the AWT-free
+          # formats (json/markdown/text) with image output off.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            FORMATS=json,markdown,html,text,pdf; IMG=external
+          else
+            FORMATS=json,markdown,text; IMG=off
+          fi
+          python3 scripts/parity_check.py \
+            --native "${{ steps.bin.outputs.path }}" \
+            --jar "$JAR" \
+            --samples samples/pdf \
+            --formats "$FORMATS" \
+            --image-output "$IMG"
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          OUT=dist/opendataloader-pdf-${{ matrix.target }}
+          mkdir -p "$OUT"
+          cp "${{ steps.bin.outputs.path }}" "$OUT/"
+          # Ship the headless-AWT sidecar libraries that native-image emits next
+          # to the binary (libawt_*, libfontmanager, libjavajpeg, liblcms, ...);
+          # the binary loads them via an $ORIGIN/@loader_path rpath, so they must
+          # travel together. Without these the image-extraction path fails with
+          # "UnsatisfiedLinkError: No awt in java.library.path".
+          find java/opendataloader-pdf-cli/target -maxdepth 1 \
+               \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+               -exec cp {} "$OUT/" \;
+          cp LICENSE NOTICE "$OUT/"
+          cp -r THIRD_PARTY "$OUT/"
+          tar -czf opendataloader-pdf-${{ matrix.target }}.tar.gz -C dist opendataloader-pdf-${{ matrix.target }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opendataloader-pdf-${{ matrix.target }}
+          path: opendataloader-pdf-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Publishable, pip-installable JVM-free wheels for linux (x64 + arm64).
+  #
+  # The native binary is built inside the GraalVM *community container* (Oracle
+  # Linux, older glibc) rather than on the runner: a binary linked against the
+  # ubuntu-latest glibc (2.39) will not load in slim pods such as
+  # python:3.12-slim (bookworm, glibc 2.36). Building in the old-glibc container
+  # gives the widest runtime compatibility, and the wheel's platform tag is set
+  # from the binary's actual glibc floor so the manylinux tag is always honest.
+  #
+  # Each wheel is verified by installing it into python:3.12-slim (no Java on
+  # PATH) and running convert(). Wheels are attached to the moving `latest`
+  # GitHub Release so a requirements.txt direct URL stays permanently stable.
+  linux-wheels:
+    name: wheel (${{ matrix.target }})
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+            whl_arch: x86_64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            whl_arch: aarch64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 21 (host, for the shaded jar)
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build shaded jar
+        run: mvn -B -ntp -DskipTests -f java/pom.xml package
+
+      - name: Build native binary in old-glibc GraalVM container
+        run: |
+          JAR=$(ls java/opendataloader-pdf-cli/target/opendataloader-pdf-cli-*.jar | grep -v original | head -1)
+          # UTF-8 build locale (belt-and-suspenders for the -Dsun.jnu.encoding pin
+          # in native-image.properties); the container defaults to a C/POSIX locale.
+          docker run --rm \
+            -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
+            -v "$PWD/java/opendataloader-pdf-cli/target":/target \
+            ghcr.io/graalvm/native-image-community:21 \
+            -jar "/target/$(basename "$JAR")" -o /target/opendataloader-pdf --no-fallback
+          test -f java/opendataloader-pdf-cli/target/opendataloader-pdf
+
+      - name: Build JVM-free wheel
+        run: |
+          # Pin the fork wheel version (CI-only; not committed).
+          sed -i 's/^version = "0.0.0"/version = "0.1.0"/' python/opendataloader-pdf/pyproject.toml
+          # hatchling validates [project.readme] before the build hook runs, so
+          # the README must be present in the package dir first.
+          cp README.md python/opendataloader-pdf/README.md
+          ODL_NATIVE_BINARY="$PWD/java/opendataloader-pdf-cli/target/opendataloader-pdf" \
+            uv build --wheel python/opendataloader-pdf
+
+      - name: Retag wheel with accurate manylinux platform tag
+        run: |
+          BIN=java/opendataloader-pdf-cli/target/opendataloader-pdf
+          # Highest GLIBC_x.y symbol the binary references == its glibc floor.
+          GV=$(objdump -T "$BIN" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 | sed 's/GLIBC_//')
+          if [ -z "$GV" ]; then echo "Could not determine glibc floor"; exit 1; fi
+          TAG="manylinux_${GV//./_}_${{ matrix.whl_arch }}"
+          echo "glibc floor: $GV -> platform tag: $TAG"
+          python -m pip install --quiet wheel
+          python -m wheel tags --remove --platform-tag "$TAG" python/opendataloader-pdf/dist/*.whl
+          ls -l python/opendataloader-pdf/dist/
+
+      - name: Verify wheel in python:3.12-slim (no Java)
+        run: |
+          # LANG=C.UTF-8 keeps Python's own argv/path handling UTF-8 so this test
+          # isolates the native binary's baked encoding, not a Python locale quirk.
+          docker run --rm \
+            -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
+            -v "$PWD/python/opendataloader-pdf/dist":/d \
+            -v "$PWD/samples":/s \
+            python:3.12-slim sh -c '
+              set -e
+              pip install --quiet /d/*.whl
+              if command -v java >/dev/null 2>&1; then echo "java unexpectedly present"; exit 1; fi
+              python -c "import opendataloader_pdf as o; o.convert(\"/s/pdf/lorem.pdf\", output_dir=\"/tmp/o\", format=\"json,markdown\")"
+              test -f /tmp/o/lorem.json && echo "slim-pod wheel OK (${{ matrix.target }})"
+              # Accented-path regression guard (sun.jnu.encoding pin) via the packaged wheel.
+              cp /s/pdf/lorem.pdf "/tmp/Dimensões-açéntõ.pdf"
+              python -c "import opendataloader_pdf as o; o.convert(\"/tmp/Dimensões-açéntõ.pdf\", output_dir=\"/tmp/oa\", format=\"json\")"
+              test -f "/tmp/oa/Dimensões-açéntõ.json" && echo "slim-pod accented-path OK (${{ matrix.target }})"
+            '
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: python/opendataloader-pdf/dist/*.whl
+          if-no-files-found: error
+
+  # Publish the linux wheels to a moving `latest` GitHub Release so the
+  # requirements.txt direct-URL stays valid across rebuilds.
+  publish-latest:
+    name: Publish wheels to `latest` release
+    needs: linux-wheels
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: artifacts
+      - name: Publish/refresh `latest` release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: latest
+          name: Native wheels (latest)
+          body: |
+            JVM-free linux wheels (GraalVM native-image). Install via requirements.txt:
+            see docs/NATIVE.md for the per-arch direct-URL lines.
+          make_latest: true
+          files: artifacts/**/*.whl
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-assets:
+    name: Attach binaries to release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/**/*.tar.gz
